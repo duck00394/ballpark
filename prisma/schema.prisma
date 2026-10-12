@@ -1,0 +1,493 @@
+// 私人棒球觀賽管理 APP 資料模型
+// 金額欄位一律為整數（新台幣「元」為最小單位），不使用浮點數。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ───────────── 帳號與群組 ─────────────
+
+model User {
+  id                String    @id @default(cuid())
+  username          String    @unique
+  passwordHash      String
+  displayName       String
+  favoriteTeamId    String?
+  favoriteTeam      Team?     @relation("FavoriteTeam", fields: [favoriteTeamId], references: [id])
+  followedTeamIds   String[]  @default([])
+  trackOtherTeams   Boolean   @default(false)
+  disabled          Boolean   @default(false)
+  failedLogins      Int       @default(0)
+  lockedUntil       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  sessions          Session[]
+  memberships       GroupMember[]
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  tokenHash   String   @unique
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeGroupId String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Group {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  members   GroupMember[]
+}
+
+enum GroupRole {
+  ADMIN
+  MEMBER
+}
+
+model GroupMember {
+  id        String    @id @default(cuid())
+  groupId   String
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      GroupRole @default(MEMBER)
+  active    Boolean   @default(true)
+  joinedAt  DateTime  @default(now())
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+// ───────────── 球隊、球場、比賽 ─────────────
+
+model Team {
+  id           String   @id @default(cuid())
+  league       String   @default("CPBL")
+  code         String?  // 資料來源球隊代碼，例如 CPBL 的 ACN011
+  name         String
+  shortName    String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  homeGames    Game[]   @relation("HomeTeam")
+  awayGames    Game[]   @relation("AwayTeam")
+  fans         User[]   @relation("FavoriteTeam")
+  supporters   GameAttendance[]
+
+  @@unique([league, code])
+  @@unique([league, name])
+}
+
+model Venue {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  sourceName String?  @unique // 資料來源使用的簡稱，例如「洲際」
+  city       String?
+  createdAt  DateTime @default(now())
+  games      Game[]
+}
+
+enum GameStatus {
+  SCHEDULED    // 尚未開賽
+  IN_PROGRESS  // 比賽進行中
+  FINAL        // 比賽結束（勝負由比分判斷）
+  POSTPONED    // 延期
+  CANCELLED    // 取消
+  SUSPENDED    // 保留比賽
+  OTHER        // 其他特殊狀態
+}
+
+enum GameSource {
+  MANUAL
+  CPBL
+  IMPORT
+}
+
+model Game {
+  id              String     @id @default(cuid())
+  // 官方賽程 groupId 為 null（所有群組共用）；手動建立的比賽只屬於建立的群組
+  groupId         String?
+  externalKey     String?    @unique // 例如 cpbl:2026:A:14
+  source          GameSource @default(MANUAL)
+  league          String     @default("CPBL")
+  season          Int
+  kindCode        String?    // CPBL：A 例行賽、E 季後挑戰賽、C 總冠軍賽…
+  gameType        String     @default("例行賽")
+  gameNumber      Int?
+  name            String?
+  startAt         DateTime   // 預定開賽時間（UTC 儲存）
+  homeTeamId      String
+  homeTeam        Team       @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeamId      String
+  awayTeam        Team       @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  venueId         String?
+  venue           Venue?     @relation(fields: [venueId], references: [id])
+  status          GameStatus @default(SCHEDULED)
+  homeScore       Int?
+  awayScore       Int?
+  resultConfirmed Boolean    @default(false) // 只有正式確認才計入勝敗
+  reserveDate     DateTime?  // 保留比賽預定續賽時間
+  manualLock      Boolean    @default(false) // 手動鎖定後，同步不覆蓋比分與狀態
+  note            String?
+  lastSyncedAt    DateTime?
+  createdById     String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  version         Int        @default(0)
+
+  orders          TicketOrder[]
+  tickets         Ticket[]
+  attendances     GameAttendance[]
+  changes         GameChange[]
+
+  @@index([startAt])
+  @@index([groupId])
+  @@index([season, kindCode])
+}
+
+// 比賽異動紀錄（時間、球場、狀態、比分），用於提醒與追溯
+model GameChange {
+  id        String   @id @default(cuid())
+  gameId    String
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  field     String
+  oldValue  String?
+  newValue  String?
+  source    String   // SYNC / MANUAL
+  actorId   String?
+  createdAt DateTime @default(now())
+
+  @@index([gameId, createdAt])
+}
+
+enum AttendanceStatus {
+  PLANNED      // 預計到場
+  ATTENDED     // 實際到場
+  ABSENT       // 未到場
+}
+
+model GameAttendance {
+  id            String           @id @default(cuid())
+  groupId       String
+  gameId        String
+  game          Game             @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  userId        String
+  supportTeamId String?
+  supportTeam   Team?            @relation(fields: [supportTeamId], references: [id])
+  status        AttendanceStatus @default(PLANNED)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@unique([groupId, gameId, userId])
+  @@index([userId])
+}
+
+model ScheduleSyncLog {
+  id          String   @id @default(cuid())
+  source      String
+  scope       String   // 例如 2026:A
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  success     Boolean  @default(false)
+  fetched     Int      @default(0)
+  created     Int      @default(0)
+  updated     Int      @default(0)
+  unchanged   Int      @default(0)
+  message     String?
+  triggeredBy String?  // userId 或 CRON
+}
+
+// ───────────── 購票與票券 ─────────────
+
+model TicketPlatform {
+  id          String   @id @default(cuid())
+  groupId     String?  // null = 系統預設
+  name        String
+  webUrl      String?
+  appUrl      String?  // 平台正式支援的 App 連結（若有）
+  note        String?
+  createdAt   DateTime @default(now())
+  orders      TicketOrder[]
+
+  @@unique([groupId, name])
+}
+
+enum OrderStatus {
+  PENDING      // 待購票
+  BUYING       // 購票中
+  PURCHASED    // 已購票
+  FAILED       // 購票失敗
+  CANCELLED    // 取消
+  REFUNDING    // 退票處理中
+  REFUNDED     // 已退款
+}
+
+enum FeeSplitMode {
+  BUYER_ABSORBS
+  EQUAL_HOLDERS
+  PER_TICKET
+  CUSTOM
+}
+
+model TicketOrder {
+  id              String       @id @default(cuid())
+  groupId         String
+  gameId          String
+  game            Game         @relation(fields: [gameId], references: [id])
+  platformId      String?
+  platform        TicketPlatform? @relation(fields: [platformId], references: [id])
+  purchaseUrl     String?
+  purchasedAt     DateTime?
+  buyerId         String       // 購票人（代墊者）
+  createdById     String
+  orderNumber     String?
+  ticketCategory  String?
+  feeAmount       Int          @default(0)
+  otherFeeAmount  Int          @default(0)
+  actualTotal     Int?         // 訂單實際支付總額（使用者輸入，用於核對）
+  feeSplitMode    FeeSplitMode @default(PER_TICKET)
+  customFeeSplit  Json?        // { userId: amount }
+  status          OrderStatus  @default(PURCHASED)
+  pickupDeadline  DateTime?
+  note            String?
+  clientRequestId String?      @unique
+  version         Int          @default(0)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tickets         Ticket[]
+  obligations     Obligation[]
+  payments        Payment[]
+  refunds         Refund[]
+
+  @@index([groupId, gameId])
+}
+
+enum TransferStatus {
+  UNASSIGNED   // 尚未分配
+  ASSIGNED     // 已指定持有人
+  DELIVERED    // 已完成交付
+  REVOKED      // 已撤銷或重新分配
+}
+
+enum PickupStatus {
+  NOT_PICKED   // 尚未取票
+  PICKED       // 已取票
+  FAILED       // 取票失敗
+  REFUNDED     // 已退票
+  NOT_APPLICABLE
+}
+
+model Ticket {
+  id              String         @id @default(cuid())
+  groupId         String
+  orderId         String
+  order           TicketOrder    @relation(fields: [orderId], references: [id])
+  gameId          String
+  game            Game           @relation(fields: [gameId], references: [id])
+  seq             Int            // 訂單內第幾張
+  holderId        String?
+  price           Int
+  section         String?
+  rowLabel        String?
+  seatNumber      String?
+  ticketType      String         @default("電子票")
+  pickupMethod    String?
+  secretInfo      String?        // 條碼、序號、敏感連結：僅購票人、持有人、管理者可見
+  transferStatus  TransferStatus @default(UNASSIGNED)
+  pickupStatus    PickupStatus   @default(NOT_PICKED)
+  receivedConfirmedAt DateTime?  // 持有人確認已收到
+  note            String?
+  archived        Boolean        @default(false) // 不實體刪除，保留帳目
+  version         Int            @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  transfers       TicketTransfer[]
+  obligations     Obligation[]
+
+  @@unique([orderId, seq])
+  @@index([groupId, holderId])
+}
+
+model TicketTransfer {
+  id           String   @id @default(cuid())
+  ticketId     String
+  ticket       Ticket   @relation(fields: [ticketId], references: [id])
+  action       String   // ASSIGN / DELIVER / CONFIRM_RECEIVED / REVOKE / PICKUP
+  fromUserId   String?
+  toUserId     String?
+  actorId      String
+  note         String?
+  createdAt    DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+// ───────────── 財務 ─────────────
+
+enum ObligationKind {
+  TICKET
+  FEE
+}
+
+// 應付款（債務）明細：debtor 應付 creditor。修改訂單時不覆寫，舊紀錄作廢後重新產生。
+model Obligation {
+  id          String         @id @default(cuid())
+  groupId     String
+  orderId     String
+  order       TicketOrder    @relation(fields: [orderId], references: [id])
+  ticketId    String?
+  ticket      Ticket?        @relation(fields: [ticketId], references: [id])
+  debtorId    String
+  creditorId  String
+  kind        ObligationKind
+  amount      Int
+  active      Boolean        @default(true)
+  voidedAt    DateTime?
+  voidReason  String?
+  createdAt   DateTime       @default(now())
+
+  @@index([groupId, debtorId, creditorId, active])
+  @@index([orderId, active])
+}
+
+enum PaymentStatus {
+  VALID
+  REVOKED
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  groupId          String
+  payerId          String
+  payeeId          String
+  orderId          String?
+  order            TicketOrder?  @relation(fields: [orderId], references: [id])
+  settlementId     String?       @unique
+  settlement       Settlement?   @relation(fields: [settlementId], references: [id])
+  amount           Int
+  method           String?
+  paidAt           DateTime      @default(now())
+  status           PaymentStatus @default(VALID)
+  payerConfirmedAt DateTime?
+  payeeConfirmedAt DateTime?
+  revokedAt        DateTime?
+  revokedById      String?
+  revokeReason     String?
+  note             String?
+  createdById      String
+  clientRequestId  String?       @unique
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([groupId, payerId, payeeId])
+  @@index([orderId])
+}
+
+enum RefundStatus {
+  PROCESSING   // 退款中
+  COMPLETED    // 已退款
+  CANCELLED
+}
+
+enum RefundKind {
+  PLATFORM     // 售票平台退款給購票人（不影響朋友帳）
+  MEMBER       // 朋友之間退回款項（收款人退回給付款人）
+}
+
+model Refund {
+  id              String       @id @default(cuid())
+  groupId         String
+  kind            RefundKind
+  orderId         String?
+  order           TicketOrder? @relation(fields: [orderId], references: [id])
+  fromUserId      String?      // MEMBER：退回款項的人（原收款人）
+  toUserId        String       // 收到退款的人
+  amount          Int
+  status          RefundStatus @default(PROCESSING)
+  method          String?
+  note            String?
+  createdById     String
+  completedAt     DateTime?
+  clientRequestId String?      @unique
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([groupId])
+  @@index([orderId])
+}
+
+enum SettlementStatus {
+  COMPLETED
+  CANCELLED
+}
+
+// 結算：將兩人之間跨場次的未結帳目互相抵銷，並以一筆淨額付款完成。
+model Settlement {
+  id              String           @id @default(cuid())
+  groupId         String
+  payerId         String           // 淨額付款人
+  payeeId         String
+  netAmount       Int              // 淨額（可為 0：剛好互相抵銷）
+  status          SettlementStatus @default(COMPLETED)
+  note            String?
+  createdById     String
+  cancelledAt     DateTime?
+  cancelledById   String?
+  cancelReason    String?
+  clientRequestId String?          @unique
+  createdAt       DateTime         @default(now())
+
+  items           SettlementItem[]
+  payment         Payment?
+
+  @@index([groupId])
+}
+
+// 結算涵蓋的明細：某訂單上 debtor 對 creditor 的未結金額（建立當下的快照）
+model SettlementItem {
+  id           String     @id @default(cuid())
+  settlementId String
+  settlement   Settlement @relation(fields: [settlementId], references: [id])
+  orderId      String
+  debtorId     String
+  creditorId   String
+  amount       Int
+
+  @@index([orderId])
+}
+
+model PaymentMethod {
+  id        String  @id @default(cuid())
+  groupId   String?
+  name      String
+
+  @@unique([groupId, name])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  groupId    String?
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  detail     Json?
+  createdAt  DateTime @default(now())
+
+  @@index([groupId, createdAt])
+  @@index([entityType, entityId])
+}
