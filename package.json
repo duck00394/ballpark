@@ -12,7 +12,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "test": "dotenv -e .env.test -- vitest run",
     "test:e2e": "node tests/e2e/run.mjs",
-    "typecheck": "tsc --noEmit"
+           "typecheck": "tsc --noEmit",
+       "vercel-build": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next build"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
