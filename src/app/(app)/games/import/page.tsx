@@ -1,6 +1,7 @@
 import { Card, PageHeader, SectionTitle } from "@/components/ui";
 import { requireActor } from "@/server/session";
 import { ImportForms } from "./forms";
+import { CopySnippet } from "./copy-snippet";
 
 export const metadata = { title: "匯入賽程" };
 
@@ -20,12 +21,27 @@ export default async function ImportPage() {
       </Card>
       {actor.role === "ADMIN" ? (
         <>
-          <SectionTitle>官網 JSON 匯入（管理者）</SectionTitle>
+          <SectionTitle>從官網一鍵複製賽程（管理者）</SectionTitle>
           <Card>
-            <p className="text-sm text-muted mb-2">
-              若伺服器無法連線到中華職棒官網，可在電腦瀏覽器開啟官網賽程頁，從開發者工具「網路」分頁找到 getgamedatas 請求，複製回應內容貼到這裡。
-              匯入結果與自動同步相同（以官網場次編號辨識，不會重複，也不會影響購票資料）。
-            </p>
+            <p className="text-sm text-muted mb-3">伺服器無法連上官網時使用。需要用電腦的 Chrome 或 Edge：</p>
+            <ol className="text-sm list-decimal pl-5 space-y-1.5 mb-3">
+              <li>按下方「複製程式碼」。</li>
+              <li>
+                用電腦開啟{" "}
+                <a href="https://www.cpbl.com.tw/schedule" target="_blank" rel="noopener noreferrer" className="link">
+                  中職官網賽程頁
+                </a>
+                ，等頁面載入完成。
+              </li>
+              <li>按鍵盤 F12，點上方的「Console（主控台）」分頁。</li>
+              <li>在最下方貼上程式碼並按 Enter。第一次貼上時 Chrome 可能要求先輸入 allow pasting 再按 Enter。</li>
+              <li>看到「已複製 N 筆賽程」後，回到這一頁，貼到下面的方框並按「匯入官網賽程」。</li>
+            </ol>
+            <CopySnippet />
+            <p className="text-xs text-faint mt-3">這段程式只在官網頁面上讀取公開賽程並複製到剪貼簿，不會讀取或傳送你的任何帳號資料。匯入以官網場次編號辨識，重複匯入不會產生重複比賽，也不會影響購票資料。</p>
+          </Card>
+          <SectionTitle>貼上官網賽程</SectionTitle>
+          <Card>
             <ImportForms isAdmin part="json" />
           </Card>
         </>
