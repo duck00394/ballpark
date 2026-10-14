@@ -144,34 +144,56 @@ export function normalizeCpblRows(raw: unknown[], now = new Date()): { games: No
   return { games, skipped };
 }
 
-/** 從官網取得某賽季某賽事類型的原始資料 */
+// 官網會擋掉不像一般瀏覽器的請求（部署後實測回應 404），因此使用一般瀏覽器的標頭
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+};
+const BASES = [CPBL_BASE, "https://cpbl.com.tw"];
+
+/** 從官網取得某賽季某賽事類型的原始資料（主網址失敗時改試備用網址） */
 export async function fetchCpblSeason(year: number, kindCode: string, fetchImpl: typeof fetch = fetch): Promise<unknown[]> {
+  const errors: string[] = [];
+  for (const base of BASES) {
+    try {
+      return await fetchFrom(base, year, kindCode, fetchImpl);
+    } catch (e) {
+      errors.push(`${base.replace("https://", "")}：${e instanceof Error ? e.message : e}`);
+    }
+  }
+  throw new Error(errors.join("；"));
+}
+
+async function fetchFrom(base: string, year: number, kindCode: string, fetchImpl: typeof fetch): Promise<unknown[]> {
   const ctrl = AbortSignal.timeout(20_000);
-  const ua = "Mozilla/5.0 (private baseball tracker; low-frequency schedule sync)";
-  const page = await fetchImpl(`${CPBL_BASE}/schedule`, { headers: { "User-Agent": ua }, signal: ctrl });
-  if (!page.ok) throw new Error(`官網賽程頁回應 ${page.status}`);
+  const page = await fetchImpl(`${base}/schedule`, { headers: BROWSER_HEADERS, signal: ctrl, redirect: "follow" });
+  if (!page.ok) throw new Error(`賽程頁回應 ${page.status}`);
   const html = await page.text();
   const m = /getgamedatas['"][\s\S]{0,600}?RequestVerificationToken:\s*['"]([^'"]+)['"]/.exec(html);
-  if (!m) throw new Error("官網頁面格式已改變，找不到驗證資訊");
+  if (!m) throw new Error("頁面格式已改變，找不到驗證資訊");
   const setCookies =
     (page.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ??
     (page.headers.get("set-cookie") ? [page.headers.get("set-cookie")!] : []);
   const cookie = setCookies.map((c) => c.split(";")[0]).join("; ");
+  const origin = new URL(page.url || `${base}/schedule`).origin;
   const body = new URLSearchParams({ calendar: `${year}/01/01`, location: "", kindCode, teamNo: "" });
-  const res = await fetchImpl(`${CPBL_BASE}/schedule/getgamedatas`, {
+  const res = await fetchImpl(`${origin}/schedule/getgamedatas`, {
     method: "POST",
     headers: {
+      ...BROWSER_HEADERS,
+      Accept: "application/json, text/javascript, */*; q=0.01",
       "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
       "X-Requested-With": "XMLHttpRequest",
       RequestVerificationToken: m[1],
       Cookie: cookie,
-      Referer: `${CPBL_BASE}/schedule`,
-      "User-Agent": ua,
+      Origin: origin,
+      Referer: `${origin}/schedule`,
     },
     body,
     signal: ctrl,
   });
-  if (!res.ok) throw new Error(`官網賽程資料回應 ${res.status}`);
+  if (!res.ok) throw new Error(`賽程資料回應 ${res.status}`);
   return parseCpblResponse(await res.text());
 }
 
