@@ -148,6 +148,12 @@ await step("2. 匯入官網賽程（實際取得的季後挑戰賽資料）並�
   await A.page.getByText(/匯入 4 場；新增 4/).waitFor();
   gameE4Id = (await db.game.findUniqueOrThrow({ where: { externalKey: "cpbl:2026:E:4" } })).id;
   await go(A.page, "/games?month=2026-10");
+  // 今天以前的比賽預設收合，點開才看得到
+  const past = A.page.locator("details", { hasText: "已結束的比賽" });
+  if (await past.count()) {
+    expect(!(await past.getAttribute("open")) || (await A.page.locator("main > div h2").count()) === 0, "已結束的比賽應預設收合");
+    await past.evaluate((d) => (d.open = true));
+  }
   const t = await text(A.page);
   expect(t.includes("統一7-ELEVEn獅") && t.includes("中信兄弟"), "賽程列表沒有顯示匯入的比賽");
   await go(A.page, `/games/${gameE4Id}`);

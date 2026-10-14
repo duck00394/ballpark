@@ -12,7 +12,7 @@ import { AppError, invalid } from "@/lib/errors";
 import { fetchCpblSeason, normalizeCpblRows, parseCpblResponse, type NormalizedGame } from "@/lib/sync/cpbl";
 import { fromTaipei, taipeiParts } from "@/lib/time";
 import { type Actor, audit, requireAdmin } from "@/server/context";
-import { recordChanges } from "./games";
+import { findOfficialTwin, recordChanges } from "./games";
 
 export interface ApplyResult {
   created: number;
@@ -131,6 +131,35 @@ export async function applyNormalizedGames(tx: Tx, games: NormalizedGame[], grou
   return res;
 }
 
+/**
+ * 合併重複比賽：群組自建（或 CSV 匯入）的比賽，如果官方賽程已有同一天、同樣兩隊的比賽，
+ * 把訂單、票券、觀賽紀錄移到官方那場，再刪除自建的那場。金額與付款紀錄都掛在訂單上，不受影響。
+ */
+export async function mergeDuplicateGames(tx: Tx): Promise<number> {
+  const manual = await tx.game.findMany({ where: { groupId: { not: null } } });
+  let merged = 0;
+  for (const m of manual) {
+    const official = await findOfficialTwin(tx, m.startAt, m.homeTeamId, m.awayTeamId);
+    if (!official) continue;
+    await tx.ticketOrder.updateMany({ where: { gameId: m.id }, data: { gameId: official.id } });
+    await tx.ticket.updateMany({ where: { gameId: m.id }, data: { gameId: official.id } });
+    const atts = await tx.gameAttendance.findMany({ where: { gameId: m.id } });
+    for (const a of atts) {
+      const exists = await tx.gameAttendance.findUnique({
+        where: { groupId_gameId_userId: { groupId: a.groupId, gameId: official.id, userId: a.userId } },
+      });
+      if (exists) await tx.gameAttendance.delete({ where: { id: a.id } });
+      else await tx.gameAttendance.update({ where: { id: a.id }, data: { gameId: official.id } });
+    }
+    await tx.game.delete({ where: { id: m.id } });
+    await tx.auditLog.create({
+      data: { groupId: m.groupId, action: "GAME_MERGE", entityType: "Game", entityId: official.id, detail: { mergedFrom: m.id, startAt: m.startAt.toISOString() } },
+    });
+    merged++;
+  }
+  return merged;
+}
+
 const DEFAULT_KINDS = ["A", "E", "C"];
 
 export function configuredKinds(): string[] {
@@ -155,8 +184,11 @@ export async function syncCpbl(opts: {
       const raw = await fetchCpblSeason(season, kind, opts.fetchImpl);
       const { games, skipped } = normalizeCpblRows(raw);
       if (raw.length > 0 && games.length === 0) throw new Error("資料格式無法解析，未寫入任何資料");
-      const r = await prisma.$transaction((tx) => applyNormalizedGames(tx, games), { timeout: 120_000 });
-      const msg = `取得 ${raw.length} 列、${games.length} 場；新增 ${r.created}、更新 ${r.updated}、未變 ${r.unchanged}${skipped ? `、略過 ${skipped} 列格式不符` : ""}`;
+      const r = await prisma.$transaction(
+        async (tx) => ({ ...(await applyNormalizedGames(tx, games)), merged: await mergeDuplicateGames(tx) }),
+        { timeout: 120_000 },
+      );
+      const msg = `取得 ${raw.length} 列、${games.length} 場；新增 ${r.created}、更新 ${r.updated}、未變 ${r.unchanged}${r.merged ? `、合併 ${r.merged} 場重複的自建比賽` : ""}${skipped ? `、略過 ${skipped} 列格式不符` : ""}`;
       await prisma.scheduleSyncLog.update({
         where: { id: log.id },
         data: { finishedAt: new Date(), success: true, fetched: games.length, created: r.created, updated: r.updated, unchanged: r.unchanged, message: msg },
@@ -193,8 +225,11 @@ export async function importCpblJson(actor: Actor, text: string) {
   const { games, skipped } = normalizeCpblRows(raw);
   if (!games.length) throw invalid("沒有可匯入的比賽");
   const log = await prisma.scheduleSyncLog.create({ data: { source: "CPBL_JSON", scope: "import", triggeredBy: actor.userId } });
-  const r = await prisma.$transaction((tx) => applyNormalizedGames(tx, games), { timeout: 120_000 });
-  const msg = `匯入 ${games.length} 場；新增 ${r.created}、更新 ${r.updated}、未變 ${r.unchanged}${skipped ? `、略過 ${skipped} 列` : ""}`;
+  const r = await prisma.$transaction(
+    async (tx) => ({ ...(await applyNormalizedGames(tx, games)), merged: await mergeDuplicateGames(tx) }),
+    { timeout: 120_000 },
+  );
+  const msg = `匯入 ${games.length} 場；新增 ${r.created}、更新 ${r.updated}、未變 ${r.unchanged}${r.merged ? `；合併 ${r.merged} 場重複的自建比賽（票券與付款已移到官方賽程）` : ""}${skipped ? `、略過 ${skipped} 列` : ""}`;
   await prisma.scheduleSyncLog.update({
     where: { id: log.id },
     data: { finishedAt: new Date(), success: true, fetched: games.length, created: r.created, updated: r.updated, unchanged: r.unchanged, message: msg },
@@ -263,9 +298,9 @@ export async function importCsvGames(actor: Actor, csv: string) {
     }
   }
   if (errors.length) throw invalid(`CSV 有錯誤，未匯入任何資料：\n${errors.slice(0, 10).join("\n")}`);
-  const r = await prisma.$transaction((tx) => applyNormalizedGames(tx, games, actor.groupId), { timeout: 60_000 });
+  const r = await prisma.$transaction(async (tx) => ({ ...(await applyNormalizedGames(tx, games, actor.groupId)), merged: await mergeDuplicateGames(tx) }), { timeout: 60_000 });
   await audit(prisma, actor, "SCHEDULE_CSV_IMPORT", "Game", null, r);
-  return `匯入 ${games.length} 場；新增 ${r.created}、更新 ${r.updated}、未變 ${r.unchanged}`;
+  return `匯入 ${games.length} 場；新增 ${r.created}、更新 ${r.updated}、未變 ${r.unchanged}${r.merged ? `；其中 ${r.merged} 場與官方賽程重複，已合併` : ""}`;
 }
 
 export function splitCsv(line: string): string[] {

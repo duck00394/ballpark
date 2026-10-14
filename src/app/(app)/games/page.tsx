@@ -58,6 +58,22 @@ export default async function GamesPage({ searchParams }: { searchParams: Promis
   const byDay = new Map<string, typeof games>();
   for (const g of games) (byDay.get(ymd(g.startAt)) ?? byDay.set(ymd(g.startAt), []).get(ymd(g.startAt))!).push(g);
 
+  // 已結束的日期（今天以前）預設收合，今天與之後的比賽優先顯示
+  const todayKey = ymd(new Date());
+  const pastDays = [...byDay].filter(([day]) => day < todayKey);
+  const upcomingDays = [...byDay].filter(([day]) => day >= todayKey);
+  const renderDay = ([day, list]: [string, typeof games]) => (
+    <div key={day}>
+      <SectionTitle count={list.length > 1 ? `${list.length} 場` : undefined}>
+        {fmtDate(list[0].startAt)}
+        {day === todayKey ? <span className="count tone-good">今天</span> : null}
+      </SectionTitle>
+      {list.map((g) => (
+        <GameCard key={g.id} g={g} href={`/games/${g.id}`} mine={mineCount.get(g.id)} groupTickets={(groupCount.get(g.id) ?? 0) > (mineCount.get(g.id) ?? 0) ? groupCount.get(g.id) : undefined} />
+      ))}
+    </div>
+  );
+
   return (
     <>
       <PageHeader title="賽事" action={<LinkButton href="/games/new" variant="primary" className="btn-sm">新增比賽</LinkButton>} />
@@ -150,14 +166,19 @@ export default async function GamesPage({ searchParams }: { searchParams: Promis
           <Empty action={<LinkButton href="/games/new">手動新增比賽</LinkButton>}>這個月沒有符合條件的比賽</Empty>
         </Card>
       ) : (
-        [...byDay].map(([day, list]) => (
-          <div key={day}>
-            <SectionTitle count={list.length > 1 ? `${list.length} 場` : undefined}>{fmtDate(list[0].startAt)}</SectionTitle>
-            {list.map((g) => (
-              <GameCard key={g.id} g={g} href={`/games/${g.id}`} mine={mineCount.get(g.id)} groupTickets={(groupCount.get(g.id) ?? 0) > (mineCount.get(g.id) ?? 0) ? groupCount.get(g.id) : undefined} />
-            ))}
-          </div>
-        ))
+        <>
+          {pastDays.length ? (
+            <details className="card disclosure mb-3" open={upcomingDays.length === 0}>
+              <summary>
+                已結束的比賽
+                <span className="text-sm text-faint font-normal">{pastDays.reduce((a, [, l]) => a + l.length, 0)} 場</span>
+              </summary>
+              <div className="mt-2">{pastDays.map(renderDay)}</div>
+            </details>
+          ) : null}
+          {upcomingDays.map(renderDay)}
+          {upcomingDays.length === 0 && pastDays.length ? <p className="text-sm text-faint text-center my-4">這個月已經沒有尚未開打的比賽，可以按「下個月」。</p> : null}
+        </>
       )}
     </>
   );

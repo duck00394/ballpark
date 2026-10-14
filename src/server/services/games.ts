@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { GameStatus, Prisma } from "@prisma/client";
 import { prisma, type Tx } from "@/lib/db";
 import { conflict, forbidden, invalid, notFound } from "@/lib/errors";
-import { fromTaipei, taipeiParts } from "@/lib/time";
+import { addDays, fromTaipei, startOfTaipeiDay, taipeiParts } from "@/lib/time";
 import { type Actor, audit, withTx } from "@/server/context";
 
 export const gameInclude = {
@@ -102,10 +102,29 @@ const gameSchema = z
   .refine((d) => d.homeTeamId !== d.awayTeamId, { message: "主隊與客隊不可相同" });
 
 /** 任何成員都可以手動新增比賽（只屬於自己的群組） */
+/** 找出同一天（台灣時間）、同樣兩隊的官方比賽，不分主客 */
+export async function findOfficialTwin(db: Tx, startAt: Date, teamA: string, teamB: string) {
+  const day = startOfTaipeiDay(startAt);
+  const list = await db.game.findMany({
+    where: {
+      groupId: null,
+      startAt: { gte: day, lt: addDays(day, 1) },
+      OR: [
+        { homeTeamId: teamA, awayTeamId: teamB },
+        { homeTeamId: teamB, awayTeamId: teamA },
+      ],
+    },
+  });
+  // 同一天有兩場（雙重賽）時，取開賽時間最接近的
+  return list.sort((x, y) => Math.abs(+x.startAt - +startAt) - Math.abs(+y.startAt - +startAt))[0] ?? null;
+}
+
 export async function createManualGame(actor: Actor, input: z.input<typeof gameSchema>) {
   const d = gameSchema.parse(input);
   const startAt = fromTaipei(d.date, d.time);
   await assertTeamsVenue(d.homeTeamId, d.awayTeamId, d.venueId);
+  if (await findOfficialTwin(prisma, startAt, d.homeTeamId, d.awayTeamId))
+    throw invalid("官方賽程已經有這場比賽（同一天、同樣兩隊），請直接到「賽事」點選那場比賽購票，避免重複。");
   return withTx(async (tx) => {
     const g = await tx.game.create({
       data: {

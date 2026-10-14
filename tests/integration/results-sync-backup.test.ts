@@ -329,3 +329,33 @@ describe("備份、匯出與還原", () => {
     await expect(analyzeBackup(G.actors[1], JSON.stringify(good))).rejects.toThrow(/管理者/);
   });
 });
+
+describe("重複比賽", () => {
+  it("匯入官方賽程時，自動把同一天同兩隊的自建比賽併入官方比賽，票券與帳目不變", async () => {
+    const [me, A] = G.actors;
+    const [bro, dragon] = [await team("ACN011"), await team("AAA011")];
+    // 使用者先手動建立（主客相反、時間不同）並買票、付款、記錄觀賽
+    const manual = await createManualGame(A, { date: "2026-10-17", time: "18:35", homeTeamId: bro.id, awayTeamId: dragon.id, venueId: null });
+    const o = await attendWithTicket(manual.id, 0, [0, 1]);
+    await createPayment(A, { orderId: o.id, payerId: A.userId, amount: 200, clientRequestId: rid() });
+    await setAttendance(me, manual.id, me.userId, { status: "PLANNED", supportTeamId: bro.id });
+    const before = JSON.stringify(await computeLedger(prisma, G.group.id));
+    const rows = [
+      { KindCode: "C", Year: "2026", GameSno: 1, GameDate: "2026-10-17T00:00:00", PreExeDate: "2026-10-17T17:05:00", GameDateTimeS: "2026-10-17T17:05:00", GameDateTimeE: null, GameResult: "", PresentStatus: 1, IsPlayBall: "N", ReserveDate: null, HomeTeamCode: "AAA011", HomeTeamName: "", VisitingTeamCode: "ACN011", VisitingTeamName: "", FieldAbbe: "大巨蛋", VisitingScore: 0, HomeScore: 0 },
+    ];
+    const msg = await importCpblJson(me, JSON.stringify(rows));
+    expect(msg).toContain("合併 1 場");
+    const official = await prisma.game.findUniqueOrThrow({ where: { externalKey: "cpbl:2026:C:1" } });
+    expect(await prisma.game.findUnique({ where: { id: manual.id } })).toBeNull();
+    expect((await prisma.ticketOrder.findUniqueOrThrow({ where: { id: o.id } })).gameId).toBe(official.id);
+    expect(await prisma.ticket.count({ where: { gameId: official.id } })).toBe(2);
+    expect(await prisma.gameAttendance.count({ where: { gameId: official.id } })).toBe(2);
+    expect(JSON.stringify(await computeLedger(prisma, G.group.id))).toBe(before);
+    // 之後不能再手動建立同一場
+    await expect(createManualGame(A, { date: "2026-10-17", time: "17:05", homeTeamId: dragon.id, awayTeamId: bro.id, venueId: null })).rejects.toThrow(/官方賽程已經有這場/);
+    // 不同對戰不受影響
+    const other = await createManualGame(A, { date: "2026-10-17", time: "17:05", homeTeamId: (await team("AEO011")).id, awayTeamId: bro.id, venueId: null });
+    await importCpblJson(me, JSON.stringify(rows));
+    expect(await prisma.game.findUnique({ where: { id: other.id } })).not.toBeNull();
+  });
+});

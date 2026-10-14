@@ -13,6 +13,8 @@ export type GameLike = {
   awayScore: number | null;
   resultConfirmed: boolean;
   gameType: string;
+  gameNumber?: number | null;
+  groupId?: string | null;
   homeTeamId?: string;
   awayTeamId?: string;
   homeTeam: { name: string; shortName: string };
@@ -49,6 +51,14 @@ export function Score({ g }: { g: GameLike }) {
 }
 
 /** 賽事卡：客隊在上、主隊在下（依資料來源主客隊），完賽時以文字「勝／和」標示，不只靠顏色 */
+/** 比賽類別標籤：例行賽不標，季後賽標「總冠軍賽 第 1 戰」，群組自建標「自建比賽」 */
+export function gameTag(g: Pick<GameLike, "gameType" | "gameNumber" | "groupId">) {
+  if (g.groupId) return "自建比賽";
+  if (/例行賽/.test(g.gameType)) return null;
+  const name = g.gameType.replace(/^一軍/, "");
+  return g.gameNumber ? `${name} 第 ${g.gameNumber} 戰` : name;
+}
+
 export function GameCard({ g, href, mine, groupTickets, children }: { g: GameLike; href?: string; mine?: number; groupTickets?: number; children?: React.ReactNode }) {
   const r = officialResult({ ...g, homeTeamId: g.homeTeamId ?? "", awayTeamId: g.awayTeamId ?? "" });
   const showScore = g.homeScore != null && g.awayScore != null && (g.status === "FINAL" || g.status === "IN_PROGRESS" || g.status === "SUSPENDED");
@@ -78,6 +88,7 @@ export function GameCard({ g, href, mine, groupTickets, children }: { g: GameLik
         </div>
         <GameStatusBadge g={g} />
       </div>
+      {gameTag(g) ? <div className={`text-xs font-semibold mb-1 ${g.groupId ? "tone-warn" : "tone-info"}`}>{gameTag(g)}</div> : null}
       {row("AWAY")}
       {row("HOME")}
       {mine || groupTickets ? (
