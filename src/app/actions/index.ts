@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db";
-import { errorMessage } from "@/lib/errors";
+import { AppError, errorMessage } from "@/lib/errors";
 import { actorFor } from "@/server/context";
 import { SESSION_COOKIE, currentSession, setSessionCookie } from "@/server/session";
 import { changePassword, deleteSession, login, setupFirstAdmin, createSession } from "@/server/services/auth";
@@ -209,7 +209,7 @@ export async function syncAction(_prev: ActionResult) {
   return run(async (a) => {
     const r = await manualSync(a);
     const failed = r.filter((x) => !x.ok);
-    if (failed.length === r.length) throw new Error(`同步失敗：${failed[0]?.message ?? ""}。既有賽程不受影響。`);
+    if (failed.length === r.length) throw new AppError("VALIDATION", "官網拒絕伺服器連線，無法自動同步。請到「匯入賽程」用書籤匯入（約 10 秒）。既有賽程不受影響。");
     return failed.length ? `部分完成：${failed.map((f) => `${f.kind} 失敗（${f.message}）`).join("；")}` : "賽程已同步";
   });
 }

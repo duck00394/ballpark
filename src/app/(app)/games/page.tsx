@@ -70,7 +70,12 @@ export default async function GamesPage({ searchParams }: { searchParams: Promis
               {lastFail ? <Badge tone="bad">同步失敗</Badge> : lastOk ? <Badge tone="good">已同步</Badge> : <Badge tone="muted">尚未同步</Badge>}
             </div>
             <div className="text-xs text-faint mt-1 num">最後成功：{lastOk?.finishedAt ? fmtFull(lastOk.finishedAt) : "—"}</div>
-            {lastFail ? <div className="text-xs tone-bad mt-1">{lastFail.message}</div> : null}
+            {lastFail ? (
+              <div className="text-xs mt-1">
+                <span className="tone-bad">官網拒絕伺服器連線，無法自動同步。</span>
+                <Link href="/games/import" className="link">改用書籤匯入</Link>
+              </div>
+            ) : null}
           </div>
           <SyncButton />
         </div>
