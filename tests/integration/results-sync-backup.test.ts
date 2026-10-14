@@ -225,6 +225,23 @@ describe("E. 賽程同步", () => {
     expect(o.id).toBeTruthy();
   });
 
+  it("總冠軍賽官網資料只有球隊代碼、名稱空白時仍可匯入，且不會改掉球隊名稱", async () => {
+    const [me] = G.actors;
+    // 2026-10-14 官網實際的總冠軍賽資料格式：HomeTeamName／VisitingTeamName 為空字串
+    const base = { KindCode: "C", Year: "2026", GameResult: "", PresentStatus: 1, IsPlayBall: "N", ReserveDate: null, VisitingScore: 0, HomeScore: 0, FieldAbbe: "大巨蛋" };
+    const rows = [
+      { ...base, GameSno: 1, GameDate: "2026-10-17T00:00:00", PreExeDate: "2026-10-17T17:05:00", GameDateTimeS: "2026-10-17T17:05:00", GameDateTimeE: null, HomeTeamCode: "AAA011", HomeTeamName: "", VisitingTeamCode: "ACN011", VisitingTeamName: "" },
+      { ...base, GameSno: 3, GameDate: "2026-10-20T00:00:00", PreExeDate: "2026-10-20T18:35:00", GameDateTimeS: "2026-10-20T18:35:00", GameDateTimeE: null, HomeTeamCode: "ACN011", HomeTeamName: "", VisitingTeamCode: "AAA011", VisitingTeamName: "" },
+    ];
+    expect(await importCpblJson(me, JSON.stringify(rows))).toContain("新增 2");
+    const g1 = await prisma.game.findUniqueOrThrow({ where: { externalKey: "cpbl:2026:C:1" }, include: { homeTeam: true, awayTeam: true, venue: true } });
+    expect([g1.homeTeam.name, g1.awayTeam.name, g1.venue!.name, g1.gameType, g1.status]).toEqual(["味全龍", "中信兄弟", "臺北大巨蛋", "一軍總冠軍賽", "SCHEDULED"]);
+    const g3 = await prisma.game.findUniqueOrThrow({ where: { externalKey: "cpbl:2026:C:3" }, include: { homeTeam: true } });
+    expect(g3.homeTeam.name).toBe("中信兄弟");
+    expect(await prisma.team.count({ where: { name: "" } })).toBe(0);
+    expect(await prisma.team.count()).toBe(6);
+  });
+
   it("管理者可貼上官網 JSON 匯入；CSV 匯入用編號避免重複", async () => {
     const [me, A] = G.actors;
     await expect(importCpblJson(A, JSON.stringify(fx.E))).rejects.toThrow(/管理者/);

@@ -21,20 +21,31 @@ export interface ApplyResult {
   changedGameIds: string[];
 }
 
-async function teamFor(tx: Tx, league: string, code: string | null, name: string) {
+async function teamFor(tx: Tx, league: string, code: string | null, rawName: string) {
+  // 官網在對戰剛確定時（例如總冠軍賽）只給球隊代碼、名稱留空，因此空白名稱一律沿用既有資料
+  const name = rawName.trim();
   if (code) {
     const byCode = await tx.team.findUnique({ where: { league_code: { league, code } } });
     if (byCode) {
-      if (byCode.name !== name) await tx.team.update({ where: { id: byCode.id }, data: { name } });
+      if (name && byCode.name !== name) {
+        // 球隊改名時才更新，且不能撞到其他球隊的名稱
+        const clash = await tx.team.findUnique({ where: { league_name: { league, name } } });
+        if (!clash) await tx.team.update({ where: { id: byCode.id }, data: { name, shortName: name.replace("7-ELEVEn", "") } });
+      }
       return byCode.id;
     }
   }
-  const byName = await tx.team.findUnique({ where: { league_name: { league, name } } });
-  if (byName) {
-    if (code && !byName.code) await tx.team.update({ where: { id: byName.id }, data: { code } });
-    return byName.id;
+  if (name) {
+    const byName = await tx.team.findUnique({ where: { league_name: { league, name } } });
+    if (byName) {
+      if (code && !byName.code) await tx.team.update({ where: { id: byName.id }, data: { code } });
+      return byName.id;
+    }
   }
-  const t = await tx.team.create({ data: { league, code, name, shortName: name.replace("7-ELEVEn", "") } });
+  const label = name || code || "未定球隊";
+  const existing = await tx.team.findUnique({ where: { league_name: { league, name: label } } });
+  if (existing) return existing.id;
+  const t = await tx.team.create({ data: { league, code, name: label, shortName: label.replace("7-ELEVEn", "") } });
   return t.id;
 }
 
