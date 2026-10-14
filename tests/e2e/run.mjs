@@ -284,6 +284,28 @@ await step("9. B 手動建立第二場比賽並建立購票訂單（A、D 各一
   order2Id = B.page.url().split("/orders/")[1].split(/[?#]/)[0];
 });
 
+await step("我的票券：大大從票券夾找到票、左右滑動檢視、一鍵取票、可開啟轉送", async () => {
+  await go(D.page, "/tickets");
+  const t = await text(D.page);
+  expect(t.includes("未取票") && t.includes("共 1 張待取"), `票券夾內容錯誤：${t.slice(0, 200)}`);
+  await D.page.locator(`[data-wallet-game="${game2Id}"]`).click();
+  await waitPath(D.page, /^\/tickets\/game\//);
+  const card = D.page.locator('[data-wallet-ticket="3"]');
+  const ct = await card.innerText();
+  expect(ct.includes("座位未填") && ct.includes("小波 購買並轉贈"), `票券卡內容錯誤：${ct}`);
+  await card.getByRole("button", { name: "轉送給朋友" }).click();
+  await D.page.getByRole("dialog", { name: "轉送票券" }).waitFor();
+  await D.page.getByRole("button", { name: "取消" }).click();
+  await submit(D.page, "我已取票", card);
+  await card.getByText("已取票", { exact: true }).waitFor();
+  const x = await db.ticket.findFirstOrThrow({ where: { orderId: order2Id, seq: 3 } });
+  expect(x.pickupStatus === "PICKED" && x.receivedConfirmedAt && x.transferStatus === "DELIVERED", "取票未寫入或未同時確認收到");
+  await go(D.page, "/tickets?tab=done");
+  expect((await text(D.page)).includes("共 1 張已取"), "已取票分頁沒有出現");
+  // 付款狀態不受影響
+  expect((await db.payment.count({ where: { orderId: order2Id, payerId: x.holderId } })) === 0, "取票不應產生付款");
+});
+
 await step("10. 跨場次彙總：A 對 B 淨額 = 500 − 370 = 130（A 應付 B）", async () => {
   await go(A.page, "/settle");
   const card = A.page.locator("section.card", { hasText: "淨額：我應付 小波" });
@@ -457,7 +479,9 @@ const pages = [
   ["比賽詳情", () => `/games/${gameE4Id}`],
   ["新增購票", () => `/orders/new?gameId=${gameE4Id}`],
   ["訂單詳情", () => `/orders/${orderId}`],
-  ["票券", "/tickets?scope=all&past=1"],
+  ["我的票券", "/tickets?tab=todo"],
+  ["票券夾", () => `/tickets/game/${game2Id}`],
+  ["群組票券管理", "/tickets/manage?f=all&past=1"],
   ["結算", "/settle"],
   ["個人", "/me?year=2026"],
   ["資料匯出", "/me/data"],

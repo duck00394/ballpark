@@ -393,10 +393,73 @@ export async function setPickupStatus(actor: Actor, ticketId: string, status: "N
     const o = await tx.ticketOrder.findUniqueOrThrow({ where: { id: t.orderId } });
     if (t.holderId !== actor.userId && !canEditOrder(actor, o)) throw forbidden();
     if (t.pickupStatus === "REFUNDED") throw invalid("已退票的票券不能更改取票狀態");
-    await tx.ticket.update({ where: { id: ticketId }, data: { pickupStatus: status, version: { increment: 1 } } });
+    // 持有人本人取票＝票已經在自己手上，同時視為「確認收到」（付款狀態不受影響）
+    const alsoReceive = status === "PICKED" && t.holderId === actor.userId && t.holderId !== o.buyerId && !t.receivedConfirmedAt;
+    await tx.ticket.update({
+      where: { id: ticketId },
+      data: {
+        pickupStatus: status,
+        ...(alsoReceive ? { receivedConfirmedAt: new Date(), transferStatus: "DELIVERED" } : {}),
+        version: { increment: 1 },
+      },
+    });
+    if (alsoReceive)
+      await tx.ticketTransfer.create({ data: { ticketId, action: "CONFIRM_RECEIVED", toUserId: actor.userId, actorId: actor.userId } });
     await tx.ticketTransfer.create({ data: { ticketId, action: `PICKUP:${status}`, toUserId: t.holderId, actorId: actor.userId } });
-    await audit(tx, actor, "TICKET_PICKUP", "Ticket", ticketId, { status });
+    await audit(tx, actor, "TICKET_PICKUP", "Ticket", ticketId, { status, alsoReceive });
   });
+}
+
+/**
+ * 轉送票券給群組內其他成員（持有人本人，或訂單建立者／購票人／管理者）。
+ * 新持有人需重新取票；應付款改由新持有人負擔，原持有人已付的款項保留並顯示為需退回。
+ */
+export async function transferTicket(actor: Actor, ticketId: string, toUserId: string) {
+  return withTx(async (tx) => {
+    await lockGroup(tx, actor.groupId);
+    const t = await getTicketForActor(tx, actor, ticketId);
+    const o = await tx.ticketOrder.findUniqueOrThrow({ where: { id: t.orderId } });
+    if (t.holderId !== actor.userId && !canEditOrder(actor, o)) throw forbidden("只有持有人或訂單管理者可以轉送這張票");
+    if (t.archived) throw invalid("此票券已移除");
+    if (o.status !== "PURCHASED" && o.status !== "REFUNDING") throw invalid("訂單不是已購票狀態，不能轉送");
+    if (t.pickupStatus === "REFUNDED") throw invalid("已退票的票券不能轉送");
+    await assertGroupMember(tx, actor.groupId, toUserId, "轉送對象");
+    if (toUserId === t.holderId) throw invalid("這張票已經是對方的了");
+    await tx.ticket.update({
+      where: { id: ticketId },
+      data: {
+        holderId: toUserId,
+        transferStatus: "ASSIGNED",
+        pickupStatus: "NOT_PICKED",
+        receivedConfirmedAt: null,
+        version: { increment: 1 },
+      },
+    });
+    const logs: Prisma.TicketTransferCreateManyInput[] = [];
+    if (t.holderId) logs.push({ ticketId, action: "REVOKE", fromUserId: t.holderId, toUserId, actorId: actor.userId });
+    logs.push({ ticketId, action: "ASSIGN", fromUserId: t.holderId, toUserId, actorId: actor.userId, note: "轉送" });
+    await tx.ticketTransfer.createMany({ data: logs });
+    await ensureAttendance(tx, actor.groupId, t.gameId, toUserId);
+    await syncObligations(tx, t.orderId, "轉送票券");
+    await audit(tx, actor, "TICKET_TRANSFER", "Ticket", ticketId, { from: t.holderId, to: toUserId });
+  });
+}
+
+/** 我的票券夾：我持有的票，加上我購買但尚未分配的票 */
+export async function walletTickets(actor: Actor, opts: { gameId?: string } = {}) {
+  const tickets = await prisma.ticket.findMany({
+    where: {
+      groupId: actor.groupId,
+      archived: false,
+      pickupStatus: { not: "REFUNDED" },
+      order: { status: { in: ["PURCHASED", "REFUNDING"] } },
+      OR: [{ holderId: actor.userId }, { holderId: null, order: { buyerId: actor.userId } }],
+      ...(opts.gameId ? { gameId: opts.gameId } : { game: { startAt: { gte: new Date(Date.now() - 6 * 3600_000) } } }),
+    },
+    include: { order: { include: { platform: true } }, game: { include: { homeTeam: true, awayTeam: true, venue: true } } },
+    orderBy: [{ game: { startAt: "asc" } }, { orderId: "asc" }, { seq: "asc" }],
+  });
+  return tickets.map((t) => ({ ...t, secretInfo: canSeeSecret(actor, t, t.order) ? t.secretInfo : null }));
 }
 
 /** 票券敏感資訊只給購票人、建立者、持有人與管理者 */

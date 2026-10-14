@@ -16,6 +16,7 @@ import {
   createOrder,
   createPlatform,
   setPickupStatus,
+  transferTicket,
   updateOrder,
   updateTicket,
 } from "@/server/services/orders";
@@ -322,6 +323,9 @@ export async function ticketQuickAction(_: ActionResult, fd: FormData) {
       case "unpicked":
         await setPickupStatus(a, id, "NOT_PICKED");
         return "已改回尚未取票";
+      case "transfer":
+        await transferTicket(a, id, str(fd, "toUserId"));
+        return { redirectTo: "/tickets?sent=1" };
       case "archive":
         await archiveTicket(a, id);
         return "已移除票券（帳目紀錄保留）";

@@ -144,7 +144,7 @@ export async function homeData(actor: Actor, now = new Date()) {
   // 我持有：待確認收到、尚未取票
   for (const t of myTickets) {
     if (t.order.buyerId !== actor.userId && !t.receivedConfirmedAt && t.order.status === "PURCHASED")
-      todos.push({ kind: "CONFIRM_RECEIVE", title: "請確認是否已收到票券", detail: `${label(t.game)}・第 ${t.seq} 張`, href: `/tickets/${t.id}`, at: t.game.startAt });
+      todos.push({ kind: "CONFIRM_RECEIVE", title: "請確認是否已收到票券", detail: `${label(t.game)}・第 ${t.seq} 張`, href: `/tickets/game/${t.gameId}?t=${t.id}`, at: t.game.startAt });
   }
   const notPicked = [...new Map([...myTickets, ...managedTickets].map((t) => [t.id, t])).values()].filter(
     (t) => t.pickupStatus === "NOT_PICKED" && t.order.status === "PURCHASED" && (t.holderId === actor.userId || (!t.holderId && t.order.buyerId === actor.userId)),
@@ -153,9 +153,9 @@ export async function homeData(actor: Actor, now = new Date()) {
     const dl = t.order.pickupDeadline;
     const near = dl && dl.getTime() - now.getTime() < 3 * 86400_000;
     if (near)
-      todos.push({ kind: "PICKUP_DEADLINE", title: dl! < now ? "已超過取票期限" : "取票期限將至", detail: `${label(t.game)}・第 ${t.seq} 張`, href: `/tickets/${t.id}`, at: dl!, urgent: true });
+      todos.push({ kind: "PICKUP_DEADLINE", title: dl! < now ? "已超過取票期限" : "取票期限將至", detail: `${label(t.game)}・第 ${t.seq} 張`, href: `/tickets/game/${t.gameId}?t=${t.id}`, at: dl!, urgent: true });
     else if (t.game.startAt.getTime() - now.getTime() < 7 * 86400_000)
-      todos.push({ kind: "NOT_PICKED", title: "尚未取票", detail: `${label(t.game)}・第 ${t.seq} 張`, href: `/tickets/${t.id}`, at: t.game.startAt });
+      todos.push({ kind: "NOT_PICKED", title: "尚未取票", detail: `${label(t.game)}・第 ${t.seq} 張`, href: `/tickets/game/${t.gameId}?t=${t.id}`, at: t.game.startAt });
   }
 
   // 金額
